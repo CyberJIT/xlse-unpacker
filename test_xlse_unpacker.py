@@ -3,7 +3,7 @@
 test_xlse_unpacker.py
 
 Unit tests for xlse_unpacker: directory traversal, file discovery, delta sync,
-MS-OVBA decompression, and Power Query M parsing.
+MS-OVBA decompression, Power Query M parsing, and OpenXML structure deconstruction.
 """
 
 import io
@@ -25,6 +25,11 @@ from mashup_parser import (
     parse_m_queries,
     extract_datamashup_package,
     export_power_query_to_directory,
+)
+from openxml_parser import (
+    parse_workbook_xml,
+    parse_worksheet_formulas,
+    deconstruct_workbook_structure,
 )
 
 
@@ -83,7 +88,7 @@ class TestXlseUnpackerCore(unittest.TestCase):
 
         self._create_mock_zip(xlsx_file, {
             "[Content_Types].xml": "<Types/>",
-            "xl/workbook.xml": "<workbook/>",
+            "xl/workbook.xml": "<workbook><sheets><sheet name=\"Sheet1\" sheetId=\"1\"/></sheets></workbook>",
         })
 
         # First run: should create 2 files
@@ -148,7 +153,6 @@ in
         self.assertIn("CleanSales", queries)
         self.assertTrue("Csv.Document" in queries["Customer Query"])
 
-        # Test extraction from synthetic zip package
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("Formulas/Section1.m", section_m.encode("utf-8"))
@@ -162,6 +166,49 @@ in
         self.assertEqual(count, 2)
         q1_file = os.path.join(self.test_dir, "PowerQuery_Extracted", "Queries", "Customer Query.m")
         self.assertTrue(os.path.exists(q1_file))
+
+    def test_openxml_structure_deconstruction(self):
+        workbook_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheets>
+    <sheet name="Summary" sheetId="1" state="visible"/>
+    <sheet name="Data" sheetId="2" state="visible"/>
+  </sheets>
+  <definedNames>
+    <definedName name="TaxRate">0.21</definedName>
+    <definedName name="TotalRevenue">Summary!$B$10</definedName>
+  </definedNames>
+</workbook>
+"""
+        sheet1_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1"><v>100</v></c>
+      <c r="B1"><f>A1*TaxRate</f><v>21</v></c>
+    </row>
+  </sheetData>
+</worksheet>
+"""
+        xl_dir = os.path.join(self.test_dir, "xl")
+        os.makedirs(os.path.join(xl_dir, "worksheets"), exist_ok=True)
+        with open(os.path.join(xl_dir, "workbook.xml"), "w") as f:
+            f.write(workbook_xml)
+        with open(os.path.join(xl_dir, "worksheets", "sheet1.xml"), "w") as f:
+            f.write(sheet1_xml)
+
+        summary = deconstruct_workbook_structure(self.test_dir)
+        self.assertEqual(summary["sheets_count"], 2)
+        self.assertEqual(summary["defined_names_count"], 2)
+        self.assertEqual(summary["total_formulas"], 1)
+
+        sheets_json = os.path.join(self.test_dir, "Workbook_Structure", "Sheets.json")
+        formulas_json = os.path.join(self.test_dir, "Workbook_Structure", "Formulas_Summary.json")
+        names_json = os.path.join(self.test_dir, "Workbook_Structure", "DefinedNames.json")
+
+        self.assertTrue(os.path.exists(sheets_json))
+        self.assertTrue(os.path.exists(formulas_json))
+        self.assertTrue(os.path.exists(names_json))
 
 
 if __name__ == "__main__":

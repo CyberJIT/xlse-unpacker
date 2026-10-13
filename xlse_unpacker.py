@@ -3,7 +3,8 @@
 xlse_unpacker.py
 
 Core engine and CLI tool for unpacking, extracting, and deconstructing Excel files
-(.xlsx, .xlsm, .xlsb) into sibling folders with SHA-256 delta syncing.
+(.xlsx, .xlsm, .xlsb) into sibling folders with SHA-256 delta syncing, pure stdlib
+VBA decompilation, Power Query M extraction, and OpenXML structure deconstruction.
 """
 
 import argparse
@@ -13,6 +14,10 @@ import os
 import sys
 import zipfile
 from typing import Dict, List, Optional, Set, Tuple
+
+import vba_parser
+import mashup_parser
+import openxml_parser
 
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xlsb"}
 
@@ -113,7 +118,8 @@ def unpack_excel_file(
     quiet: bool = False,
 ) -> Tuple[int, int, int]:
     """
-    Unpack an Excel file into its sibling folder.
+    Unpack an Excel file into its sibling folder, and trigger deconstruction pipelines
+    for VBA code, Power Query M, and OpenXML structure.
     Returns:
         (created_count, updated_count, unchanged_count)
     """
@@ -134,6 +140,8 @@ def unpack_excel_file(
         print(f"[ERROR] {excel_path} is not a valid ZIP-based OpenXML / XLSB container.", file=sys.stderr)
         return (0, 0, 0)
 
+    vba_bin_bytes: Optional[bytes] = None
+
     try:
         with zipfile.ZipFile(excel_path, "r") as zf:
             for item in zf.infolist():
@@ -143,6 +151,9 @@ def unpack_excel_file(
                 rel_path = item.filename
                 dest_file = os.path.join(target_dir, rel_path)
                 content = zf.read(item)
+
+                if rel_path.lower().endswith("vbaproject.bin"):
+                    vba_bin_bytes = content
 
                 if os.path.exists(dest_file):
                     existing_hash = compute_file_sha256(dest_file)
@@ -168,6 +179,48 @@ def unpack_excel_file(
     except Exception as e:
         print(f"[ERROR] Failed to unpack {excel_path}: {e}", file=sys.stderr)
         return (created, updated, unchanged)
+
+    if dry_run:
+        if not quiet:
+            print(f"  [DRY-RUN] Summary: {created} would be created, {updated} updated, {unchanged} unchanged.")
+        return (created, updated, unchanged)
+
+    # 1. VBA Deconstruction
+    if vba_bin_bytes:
+        try:
+            if not quiet:
+                print("  [VBA] Decompiling vbaProject.bin...")
+            vba_data = vba_parser.parse_vba_project(vba_bin_bytes)
+            vba_counts = vba_parser.export_vba_to_directory(vba_data, target_dir)
+            if not quiet:
+                print(f"  [VBA] Extracted: {vba_counts['modules']} modules, {vba_counts['classes']} classes, {vba_counts['documents']} document streams.")
+        except Exception as e:
+            if not quiet:
+                print(f"  [VBA] Warning: Could not fully decompile vbaProject.bin: {e}")
+
+    # 2. Power Query M Extraction
+    try:
+        pq_data = mashup_parser.find_and_extract_power_query(target_dir)
+        if pq_data and pq_data.get("queries"):
+            if not quiet:
+                print("  [PowerQuery] Decompiling DataMashup package...")
+            q_count = mashup_parser.export_power_query_to_directory(pq_data, target_dir)
+            if not quiet:
+                print(f"  [PowerQuery] Extracted {q_count} queries to PowerQuery_Extracted/Queries/.")
+    except Exception as e:
+        if not quiet:
+            print(f"  [PowerQuery] Warning: Power Query extraction encountered: {e}")
+
+    # 3. OpenXML Structure Deconstruction
+    try:
+        if not quiet:
+            print("  [OpenXML] Deconstructing sheets, formulas, defined names and tables...")
+        struct_summary = openxml_parser.deconstruct_workbook_structure(target_dir)
+        if not quiet:
+            print(f"  [OpenXML] Extracted: {struct_summary['sheets_count']} sheets, {struct_summary['total_formulas']} formulas, {struct_summary['defined_names_count']} defined names.")
+    except Exception as e:
+        if not quiet:
+            print(f"  [OpenXML] Warning: OpenXML structure extraction encountered: {e}")
 
     if not quiet:
         print(f"  Summary: {created} created, {updated} updated, {unchanged} unchanged.")
