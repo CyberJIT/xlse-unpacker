@@ -87,6 +87,11 @@ python3 xlse_unpacker.py -p "/path/to/workbooks" -r
 # Filter specific workbooks
 python3 xlse_unpacker.py -p "/path/to/workbooks" -r --filter-in "*Budget*" "*2026*"
 
+# Filter by features (only files with VBA, Power Query, or formulas)
+python3 xlse_unpacker.py -p "/path/to/workbooks" -r --has-vba
+python3 xlse_unpacker.py -p "/path/to/workbooks" -r --has-pq
+python3 xlse_unpacker.py -p "/path/to/workbooks" -r --has-formulas
+
 # Exclude temporary or draft files
 python3 xlse_unpacker.py -p "/path/to/workbooks" -r --filter-out "*temp*" "~*"
 
@@ -108,6 +113,11 @@ Compatible with Windows PowerShell 5.1 and PowerShell 7+ on Windows, macOS, and 
 
 # Recursive traversal
 .\Unpack-Xlse.ps1 -Path "C:\Financials" -Recurse
+
+# Filter by features
+.\Unpack-Xlse.ps1 -Path "C:\Financials" -Recurse -HasVba
+.\Unpack-Xlse.ps1 -Path "C:\Financials" -Recurse -HasPq
+.\Unpack-Xlse.ps1 -Path "C:\Financials" -Recurse -HasFormulas
 
 # Granular filtering
 .\Unpack-Xlse.ps1 -Path "C:\Financials" -Recurse -FileInclude "*Report*", "*Model*" -FileExclude "*Draft*"

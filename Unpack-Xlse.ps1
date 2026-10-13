@@ -68,6 +68,15 @@ param(
     [string[]]$FolderExclude,
 
     [Parameter(Mandatory = $false)]
+    [switch]$HasVba,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$HasPq,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$HasFormulas,
+
+    [Parameter(Mandatory = $false)]
     [switch]$DryRun,
 
     [Parameter(Mandatory = $false)]
@@ -474,11 +483,74 @@ function Unpack-SingleExcelFile {
     return @{ Created = $created; Updated = $updated; Unchanged = $unchanged }
 }
 
+function Test-ExcelFeatures {
+    param([string]$FilePath)
+    $feat = @{ HasVba = $false; HasPq = $false; HasFormulas = $false }
+    try {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($FilePath)
+        try {
+            foreach ($entry in $archive.Entries) {
+                $nameLower = $entry.FullName.ToLowerInvariant()
+                if ($nameLower.EndsWith("vbaproject.bin")) {
+                    $feat.HasVba = $true
+                }
+                if ($nameLower.Contains("customxml") -and $nameLower.EndsWith(".xml")) {
+                    $stream = $entry.Open()
+                    $buf = [byte[]]::new([System.Math]::Min(4096, [int]$entry.Length))
+                    $read = $stream.Read($buf, 0, $buf.Length)
+                    $stream.Close()
+                    $str = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+                    if ($str.Contains("DataMashup") -or $str.Contains("PK")) {
+                        $feat.HasPq = $true
+                    }
+                }
+                elseif ($nameLower.Contains("datamashup")) {
+                    $feat.HasPq = $true
+                }
+                if ($nameLower.EndsWith("calcchain.xml")) {
+                    $feat.HasFormulas = $true
+                }
+                elseif ($nameLower.Contains("worksheets/sheet") -and $nameLower.EndsWith(".xml") -and -not $feat.HasFormulas) {
+                    $stream = $entry.Open()
+                    $reader = [System.IO.StreamReader]::new($stream)
+                    $chunk = $reader.ReadToEnd()
+                    $reader.Close()
+                    if ($chunk.Contains("<f>") -or $chunk.Contains("<f ")) {
+                        $feat.HasFormulas = $true
+                    }
+                }
+            }
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+    catch {}
+    return $feat
+}
+
 # --- Main Driver ---
 $files = Get-TargetExcelFiles -RootPath $Path -IsRecurse $Recurse -IncFiles $FileInclude -ExcFiles $FileExclude -IncFolders $FolderInclude -ExcFolders $FolderExclude
 
 if (-not $files -or $files.Count -eq 0) {
     if (-not $Quiet) { Write-Host "[INFO] No Excel files (.xlsx, .xlsm, .xlsb) found in: $Path" }
+    exit 0
+}
+
+if ($HasVba -or $HasPq -or $HasFormulas) {
+    $filtered = [System.Collections.Generic.List[string]]::new()
+    foreach ($f in $files) {
+        $feat = Test-ExcelFeatures -FilePath $f
+        if ($HasVba -and -not $feat.HasVba) { continue }
+        if ($HasPq -and -not $feat.HasPq) { continue }
+        if ($HasFormulas -and -not $feat.HasFormulas) { continue }
+        $filtered.Add($f)
+    }
+    $files = $filtered.ToArray()
+}
+
+if (-not $files -or $files.Count -eq 0) {
+    if (-not $Quiet) { Write-Host "[INFO] No Excel files matched the specified feature criteria (-HasVba, -HasPq, -HasFormulas)." }
     exit 0
 }
 

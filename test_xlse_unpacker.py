@@ -19,6 +19,7 @@ from xlse_unpacker import (
     matches_patterns,
     unpack_excel_file,
     compute_sha256,
+    inspect_excel_features,
 )
 from vba_parser import decompress_msovba, export_vba_to_directory
 from mashup_parser import (
@@ -244,6 +245,37 @@ in
         self.assertEqual(summary["sheets_count"], 1)
         sheets_file = os.path.join(self.test_dir, "Workbook_Structure", "Sheets.json")
         self.assertTrue(os.path.exists(sheets_file))
+
+    def test_feature_based_filtering(self):
+        # Create 3 files:
+        # 1. file_vba.xlsm (has vbaProject.bin)
+        # 2. file_pq.xlsx (has customXml/item1.xml with DataMashup)
+        # 3. file_formula.xlsx (has calcChain.xml)
+        f_vba = os.path.join(self.test_dir, "file_vba.xlsm")
+        f_pq = os.path.join(self.test_dir, "file_pq.xlsx")
+        f_formula = os.path.join(self.test_dir, "file_formula.xlsx")
+        f_plain = os.path.join(self.test_dir, "file_plain.xlsx")
+
+        self._create_mock_zip(f_vba, {"[Content_Types].xml": "<Types/>", "xl/vbaProject.bin": b"VBA_BIN"})
+        self._create_mock_zip(f_pq, {"[Content_Types].xml": "<Types/>", "customXml/item1.xml": b"<data>DataMashup</data>"})
+        self._create_mock_zip(f_formula, {"[Content_Types].xml": "<Types/>", "xl/calcChain.xml": b"<calcChain/>"})
+        self._create_mock_zip(f_plain, {"[Content_Types].xml": "<Types/>", "xl/workbook.xml": b"<workbook/>"})
+
+        feat_vba = inspect_excel_features(f_vba)
+        self.assertTrue(feat_vba["has_vba"])
+        self.assertFalse(feat_vba["has_pq"])
+
+        feat_pq = inspect_excel_features(f_pq)
+        self.assertTrue(feat_pq["has_pq"])
+        self.assertFalse(feat_pq["has_vba"])
+
+        feat_formula = inspect_excel_features(f_formula)
+        self.assertTrue(feat_formula["has_formulas"])
+
+        feat_plain = inspect_excel_features(f_plain)
+        self.assertFalse(feat_plain["has_vba"])
+        self.assertFalse(feat_plain["has_pq"])
+        self.assertFalse(feat_plain["has_formulas"])
 
 
 if __name__ == "__main__":

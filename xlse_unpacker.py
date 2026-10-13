@@ -112,6 +112,59 @@ def find_excel_files(
     return sorted(matched_files)
 
 
+def inspect_excel_features(excel_path: str) -> Dict[str, bool]:
+    """
+    Quickly scan the internal ZIP container of an Excel workbook to detect features:
+    - has_vba: contains vbaProject.bin
+    - has_pq: contains customXml or DataMashup streams
+    - has_formulas: contains <f> tags in worksheet XMLs or calcChain.xml
+    """
+    features = {"has_vba": False, "has_pq": False, "has_formulas": False}
+    if not zipfile.is_zipfile(excel_path):
+        return features
+
+    try:
+        with zipfile.ZipFile(excel_path, "r") as zf:
+            entries = zf.namelist()
+            
+            # 1. VBA Detection
+            features["has_vba"] = any(n.lower().endswith("vbaproject.bin") for n in entries)
+
+            # 2. Power Query Detection
+            for entry_name in entries:
+                nl = entry_name.lower()
+                if "customxml" in nl and nl.endswith(".xml"):
+                    try:
+                        chunk = zf.read(entry_name)[:4096]
+                        if b"DataMashup" in chunk or b"PK\x03\x04" in chunk:
+                            features["has_pq"] = True
+                            break
+                    except Exception:
+                        pass
+                elif "datamashup" in nl or ("customdata" in nl and nl.endswith(".bin")):
+                    features["has_pq"] = True
+                    break
+
+            # 3. Formulas Detection
+            if any(n.lower().endswith("calcchain.xml") for n in entries):
+                features["has_formulas"] = True
+            else:
+                for entry_name in entries:
+                    nl = entry_name.lower()
+                    if "worksheets/sheet" in nl and nl.endswith(".xml"):
+                        try:
+                            sheet_chunk = zf.read(entry_name)
+                            if b"<f>" in sheet_chunk or b"<f " in sheet_chunk:
+                                features["has_formulas"] = True
+                                break
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+
+    return features
+
+
 def unpack_excel_file(
     excel_path: str,
     output_dir: Optional[str] = None,
@@ -248,6 +301,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--filter-out", nargs="*", help="File patterns to exclude (e.g. '*temp*', '~*')")
     parser.add_argument("--dir-filter-in", nargs="*", help="Subdirectory patterns to include during recursion")
     parser.add_argument("--dir-filter-out", nargs="*", help="Subdirectory patterns to exclude during recursion")
+    parser.add_argument("--has-vba", action="store_true", help="Only unpack files that contain VBA macros (vbaProject.bin)")
+    parser.add_argument("--has-pq", action="store_true", help="Only unpack files that contain Power Query M queries")
+    parser.add_argument("--has-formulas", action="store_true", help="Only unpack files that contain cell formulas")
     parser.add_argument("--dry-run", action="store_true", help="Simulate actions without writing files to disk")
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress detailed per-file output")
     return parser.parse_args(argv)
@@ -267,6 +323,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not files:
         if not args.quiet:
             print(f"[INFO] No Excel files (.xlsx, .xlsm, .xlsb) found in: {args.path}")
+        return 0
+
+    # Apply feature-based filters if requested
+    if args.has_vba or args.has_pq or args.has_formulas:
+        filtered_files = []
+        for f in files:
+            feat = inspect_excel_features(f)
+            if args.has_vba and not feat["has_vba"]:
+                continue
+            if args.has_pq and not feat["has_pq"]:
+                continue
+            if args.has_formulas and not feat["has_formulas"]:
+                continue
+            filtered_files.append(f)
+        files = filtered_files
+
+    if not files:
+        if not args.quiet:
+            print("[INFO] No Excel files matched the specified feature criteria (--has-vba, --has-pq, --has-formulas).")
         return 0
 
     total_created, total_updated, total_unchanged = 0, 0, 0
