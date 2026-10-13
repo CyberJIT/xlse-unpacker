@@ -3,9 +3,10 @@
 test_xlse_unpacker.py
 
 Unit tests for xlse_unpacker: directory traversal, file discovery, delta sync,
-and pure stdlib MS-OVBA decompression.
+MS-OVBA decompression, and Power Query M parsing.
 """
 
+import io
 import os
 import shutil
 import struct
@@ -20,6 +21,11 @@ from xlse_unpacker import (
     compute_sha256,
 )
 from vba_parser import decompress_msovba, export_vba_to_directory
+from mashup_parser import (
+    parse_m_queries,
+    extract_datamashup_package,
+    export_power_query_to_directory,
+)
 
 
 class TestXlseUnpackerCore(unittest.TestCase):
@@ -94,10 +100,6 @@ class TestXlseUnpackerCore(unittest.TestCase):
         self.assertEqual(uc, 2)
 
     def test_msovba_decompression_uncompressed_chunk(self):
-        # Build an uncompressed MS-OVBA chunk:
-        # byte 0: 0x01 (sig)
-        # bytes 1-2: chunk header: (size-3) | (sig=0b011 << 12) | (compressed=0 << 15)
-        # payload: "Sub Test()\nEnd Sub\n" (20 bytes) -> chunk_size = 20 + 2 = 22 -> header = (22-3) | (3<<12) = 19 | 0x3000 = 0x3013
         payload = b"Sub Test()\nEnd Sub\n"
         chunk_header = (len(payload) + 2 - 3) | (3 << 12)
         compressed = b"\x01" + struct.pack("<H", chunk_header) + payload
@@ -125,6 +127,41 @@ class TestXlseUnpackerCore(unittest.TestCase):
         self.assertTrue(os.path.exists(mod1_path))
         self.assertTrue(os.path.exists(doc_path))
         self.assertTrue(os.path.exists(ref_path))
+
+    def test_parse_m_queries_and_export(self):
+        section_m = '''
+section Section1;
+
+shared #"Customer Query" = let
+    Source = Csv.Document(File.Contents("C:\\data.csv")),
+    #"Promoted Headers" = Table.PromoteHeaders(Source)
+in
+    #"Promoted Headers";
+
+shared CleanSales = let
+    Source = Sql.Database("server", "db")
+in
+    Source;
+'''
+        queries = parse_m_queries(section_m)
+        self.assertIn("Customer Query", queries)
+        self.assertIn("CleanSales", queries)
+        self.assertTrue("Csv.Document" in queries["Customer Query"])
+
+        # Test extraction from synthetic zip package
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("Formulas/Section1.m", section_m.encode("utf-8"))
+            zf.writestr("Config/Package.xml", "<Package/>")
+
+        mashup_bytes = b"\x00\x00\x00\x00" + buf.getvalue()
+        res = extract_datamashup_package(mashup_bytes)
+        self.assertEqual(len(res["queries"]), 2)
+
+        count = export_power_query_to_directory(res, self.test_dir)
+        self.assertEqual(count, 2)
+        q1_file = os.path.join(self.test_dir, "PowerQuery_Extracted", "Queries", "Customer Query.m")
+        self.assertTrue(os.path.exists(q1_file))
 
 
 if __name__ == "__main__":
