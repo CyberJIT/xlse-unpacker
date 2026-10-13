@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Set, Tuple
 import vba_parser
 import mashup_parser
 import openxml_parser
+import xlsb_parser
 
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xlsb"}
 
@@ -211,16 +212,24 @@ def unpack_excel_file(
         if not quiet:
             print(f"  [PowerQuery] Warning: Power Query extraction encountered: {e}")
 
-    # 3. OpenXML Structure Deconstruction
+    # 3. Structure Deconstruction (OpenXML or XLSB)
     try:
-        if not quiet:
-            print("  [OpenXML] Deconstructing sheets, formulas, defined names and tables...")
-        struct_summary = openxml_parser.deconstruct_workbook_structure(target_dir)
-        if not quiet:
-            print(f"  [OpenXML] Extracted: {struct_summary['sheets_count']} sheets, {struct_summary['total_formulas']} formulas, {struct_summary['defined_names_count']} defined names.")
+        xl_dir = os.path.join(target_dir, "xl")
+        if os.path.exists(os.path.join(xl_dir, "workbook.bin")):
+            if not quiet:
+                print("  [XLSB] Deconstructing Biff12 binary workbook structure...")
+            xlsb_summary = xlsb_parser.deconstruct_xlsb_structure(target_dir)
+            if not quiet:
+                print(f"  [XLSB] Extracted: {xlsb_summary['sheets_count']} sheets.")
+        elif os.path.exists(os.path.join(xl_dir, "workbook.xml")):
+            if not quiet:
+                print("  [OpenXML] Deconstructing sheets, formulas, defined names and tables...")
+            struct_summary = openxml_parser.deconstruct_workbook_structure(target_dir)
+            if not quiet:
+                print(f"  [OpenXML] Extracted: {struct_summary['sheets_count']} sheets, {struct_summary['total_formulas']} formulas, {struct_summary['defined_names_count']} defined names.")
     except Exception as e:
         if not quiet:
-            print(f"  [OpenXML] Warning: OpenXML structure extraction encountered: {e}")
+            print(f"  [Structure] Warning: Structure extraction encountered: {e}")
 
     if not quiet:
         print(f"  Summary: {created} created, {updated} updated, {unchanged} unchanged.")

@@ -3,7 +3,7 @@
 test_xlse_unpacker.py
 
 Unit tests for xlse_unpacker: directory traversal, file discovery, delta sync,
-MS-OVBA decompression, Power Query M parsing, and OpenXML structure deconstruction.
+MS-OVBA decompression, Power Query M parsing, OpenXML structure, and XLSB binary records.
 """
 
 import io
@@ -30,6 +30,11 @@ from openxml_parser import (
     parse_workbook_xml,
     parse_worksheet_formulas,
     deconstruct_workbook_structure,
+)
+from xlsb_parser import (
+    read_biff12_record_header,
+    RECORD_BrtBundleSh,
+    deconstruct_xlsb_structure,
 )
 
 
@@ -209,6 +214,36 @@ in
         self.assertTrue(os.path.exists(sheets_json))
         self.assertTrue(os.path.exists(formulas_json))
         self.assertTrue(os.path.exists(names_json))
+
+    def test_xlsb_record_parsing(self):
+        # Construct synthetic BrtBundleSh record
+        # hsState = 0 (visible), iTabId = 1
+        # rId = "rId1" (4 chars = 8 bytes utf-16le)
+        # name = "SummaryData" (11 chars = 22 bytes utf-16le)
+        rid_bytes = "rId1".encode("utf-16le")
+        name_bytes = "SummaryData".encode("utf-16le")
+
+        payload = struct.pack("<II", 0, 1) + struct.pack("<I", 4) + rid_bytes + struct.pack("<I", 11) + name_bytes
+        # Encode record type (0x009C): 0x9C has high bit set -> byte1 = 0x9C, byte2 = 0x01
+        # 0x9C = 156 -> (156 & 0x7F) | 0x80 = 0x1C | 0x80 = 0x9C; (156 >> 7) = 1
+        rec_type_bytes = bytes([0x9C, 0x01])
+        rec_len_bytes = bytes([len(payload)])
+
+        full_bin = rec_type_bytes + rec_len_bytes + payload
+
+        rec_type, rec_len, h_len = read_biff12_record_header(full_bin, 0)
+        self.assertEqual(rec_type, RECORD_BrtBundleSh)
+        self.assertEqual(rec_len, len(payload))
+
+        xl_dir = os.path.join(self.test_dir, "xl")
+        os.makedirs(xl_dir, exist_ok=True)
+        with open(os.path.join(xl_dir, "workbook.bin"), "wb") as f:
+            f.write(full_bin)
+
+        summary = deconstruct_xlsb_structure(self.test_dir)
+        self.assertEqual(summary["sheets_count"], 1)
+        sheets_file = os.path.join(self.test_dir, "Workbook_Structure", "Sheets.json")
+        self.assertTrue(os.path.exists(sheets_file))
 
 
 if __name__ == "__main__":
